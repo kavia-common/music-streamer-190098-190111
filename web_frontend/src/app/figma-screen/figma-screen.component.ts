@@ -27,7 +27,7 @@ import { PLATFORM_ID } from '@angular/core';
       width: 100%;
     }
     /* Ensure the Angular host allows the screen to occupy full height */
-    :host { background: #000; }
+    :host { background: transparent; }
   `]
 })
 export class FigmaScreenComponent implements OnInit, OnDestroy {
@@ -272,6 +272,9 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
     try {
       const head = this.doc.head || this.doc.getElementsByTagName('head')?.[0];
       if (!head) return null;
+      // Avoid duplicates if already present in index.html or previous injection
+      const existing = head.querySelector(`link[rel="stylesheet"][href="${href}"]`);
+      if (existing) return existing;
       const link = this.doc.createElement('link');
       link.rel = 'stylesheet';
       link.href = href;
@@ -288,6 +291,9 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
     try {
       const body = this.doc.body || this.doc.getElementsByTagName('body')?.[0];
       if (!body) return null;
+      // Avoid duplicates
+      const existing = this.doc.querySelector(`script[src="${src}"]`);
+      if (existing) return existing;
       const script = this.doc.createElement('script');
       script.src = src;
       (script as any).defer = defer;
