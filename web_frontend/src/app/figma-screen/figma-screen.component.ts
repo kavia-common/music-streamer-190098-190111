@@ -6,15 +6,8 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
 /**
  * PUBLIC_INTERFACE
  * FigmaScreenComponent
- * Renders the extracted Figma screen inside the Angular app by injecting markup from assets/spotify-1-0-3.html.
- * Hardened to avoid blank screens:
- *  - Validates fetch success and non-empty response
- *  - Provides inline fallback content if fetch fails
- *  - Uses DomSanitizer.bypassSecurityTrustHtml correctly and binds via [innerHTML]
- *  - Rewrites asset paths to valid /assets/... URLs (figmaimages, css, js)
- *  - Strips <script> tags from injected HTML to avoid unsafe inline execution
- *  - Guards against duplicate CSS/JS injection if index.html already includes them
- *  - Shows a visible error message instead of a blank screen on failures
+ * Renders the extracted Figma screen inside the Angular app by inlining the markup from assets/spotify-1-0-3.html
+ * without performing any fetch. Ensures asset paths are absolute (/assets/...), and retains guarded CSS/JS injection.
  */
 @Component({
   selector: 'app-figma-screen',
@@ -24,12 +17,6 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
     <div class="figma-screen-wrapper" aria-live="polite">
       <!-- The Figma HTML is injected into this container -->
       <div [innerHTML]="htmlContent" class="figma-html-container"></div>
-
-      <!-- Accessible error fallback if content couldn't load -->
-      <div *ngIf="showError" class="error-fallback" role="alert">
-        <div class="error-title">We couldn't load the preview.</div>
-        <div class="error-desc">Please check that the design HTML is available and try again.</div>
-      </div>
     </div>
   `,
   styles: [`
@@ -40,18 +27,6 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
       width: 100%;
     }
     :host { background: transparent; }
-
-    .error-fallback {
-      margin: 16px;
-      padding: 16px;
-      border-radius: 8px;
-      border: 1px solid #fecaca;
-      background: #fef2f2;
-      color: #991b1b;
-      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-    }
-    .error-title { font-weight: 600; margin-bottom: 4px; }
-    .error-desc { font-size: 14px; opacity: 0.9; }
   `]
 })
 export class FigmaScreenComponent implements OnInit, OnDestroy {
@@ -63,54 +38,28 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
   // Holds the sanitized HTML to be rendered into the template.
   htmlContent: SafeHtml | string = '';
 
-  // PUBLIC_INTERFACE
-  // Indicates if a visible error fallback should be shown for accessibility.
-  showError = false;
-
-  // Keep track of dynamically injected nodes to clean them up on destroy.
+  // Track dynamically injected nodes to clean them up on destroy.
   private addedNodes: any[] = [];
 
-  async ngOnInit(): Promise<void> {
-    // Guard: Only run in the browser where window, document, and fetch exist.
-    if (!isPlatformBrowser(this.platformId)) {
-      return;
-    }
-    const g: any = (typeof globalThis !== 'undefined') ? globalThis : undefined;
-    if (!g || typeof g.fetch !== 'function') {
-      // No fetch in this environment (e.g., SSR). Show safe fallback instead of blank.
-      this.showError = true;
-      this.setInlineFallbackHtml();
-      return;
-    }
-
+  ngOnInit(): void {
     // Inject global stylesheets so Figma classes apply, avoiding duplicates.
-    const css1 = this.appendStylesheet('/assets/common.css') || this.appendStylesheet('assets/common.css');
-    const css2 = this.appendStylesheet('/assets/spotify-1-0-3.css') || this.appendStylesheet('assets/spotify-1-0-3.css');
-    if (css1) this.addedNodes.push(css1);
-    if (css2) this.addedNodes.push(css2);
+    if (isPlatformBrowser(this.platformId)) {
+      const css1 = this.appendStylesheet('/assets/common.css') || this.appendStylesheet('assets/common.css');
+      const css2 = this.appendStylesheet('/assets/spotify-1-0-3.css') || this.appendStylesheet('assets/spotify-1-0-3.css');
+      if (css1) this.addedNodes.push(css1);
+      if (css2) this.addedNodes.push(css2);
+    }
 
-    // Fetch and inject the Figma HTML.
-    try {
-      // Prefer absolute /assets to avoid issues with base href or nested routes,
-      // fall back to relative if needed (in case of hosting specifics).
-      const html = await this.fetchDesignHtmlWithValidation('/assets/spotify-1-0-3.html').catch(() =>
-        this.fetchDesignHtmlWithValidation('assets/spotify-1-0-3.html')
-      );
+    // Inline the HTML from assets with absolute asset paths and stripped scripts/links.
+    const inlineHtml = this.rewriteAssetUrls(this.extractBodyInnerHtml(this.getSourceHtml()));
+    this.htmlContent = this.sanitizer.bypassSecurityTrustHtml(inlineHtml);
 
-      // Sanitize and set [innerHTML]
-      this.htmlContent = this.sanitizer.bypassSecurityTrustHtml(html);
-      this.showError = false;
-
-      // Only append scripts after content is present and avoid duplicates
+    // Append scripts after content is present and avoid duplicates
+    if (isPlatformBrowser(this.platformId)) {
       const js1 = this.appendScript('/assets/app.js', false) || this.appendScript('assets/app.js', false);
       const js2 = this.appendScript('/assets/spotify-1-0-3.js', false) || this.appendScript('assets/spotify-1-0-3.js', false);
       if (js1) this.addedNodes.push(js1);
       if (js2) this.addedNodes.push(js2);
-    } catch (e) {
-      console.error('Error injecting Figma HTML', e);
-      this.showError = true;
-      // Fallback to inline snippet so users never see a blank screen.
-      this.setInlineFallbackHtml();
     }
   }
 
@@ -168,6 +117,261 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
 
   /**
    * PUBLIC_INTERFACE
+   * Returns the full source HTML from assets/spotify-1-0-3.html as a string constant.
+   * This is embedded to avoid any runtime fetch and asset path ambiguity.
+   */
+  private getSourceHtml(): string {
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Spotify 1 - 0:3</title>
+  <link rel="stylesheet" href="./common.css">
+  <link rel="stylesheet" href="./spotify-1-0-3.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+  <div id="screen" role="application" aria-label="Spotify home layout">
+    <img id="root-bg" src="./figmaimages/figma_image_0_3_4c041435.png" alt="" aria-hidden="true">
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="style-2-bg" aria-label="Primary navigation">
+      <a href="#" class="logo brand-logo-link" aria-label="Spotify home">
+        <img
+          class="brand-logo"
+          src="./figmaimages/figma_image_0_3.png"
+          alt="Spotify"
+          width="131"
+          height="40"
+          loading="eager"
+          decoding="async"
+        >
+      </a>
+
+      <nav class="nav" aria-label="Main">
+        <button id="nav-home" class="item style-165-navitem" type="button" aria-current="page">
+          <img class="icon" alt="" src="./figmaimages/figma_image_0_150_dfe9f153.svg" width="20" height="21" loading="lazy">
+          <span class="typo-316 style-4-text">Home</span>
+        </button>
+        <button id="nav-search" class="item style-165-navitem" type="button">
+          <img class="icon" alt="" src="./figmaimages/figma_image_0_156_f3418fc8.svg" width="21" height="21" loading="lazy">
+          <span class="typo-311 style-36-text">Search</span>
+        </button>
+        <button id="nav-library" class="item style-165-navitem" type="button">
+          <span class="icon placeholder" aria-hidden="true"></span>
+          <span class="typo-311 style-36-text">Your Library</span>
+        </button>
+      </nav>
+
+      <div class="lists" aria-label="Quick actions">
+        <button class="row style-37-row" type="button">
+          <span class="typo-317 style-4-text">Create Playlist</span>
+          <span class="icon-wrap" aria-hidden="true">
+            <img class="icon" alt="" src="./figmaimages/figma_image_0_172_5db8df1c.svg" width="11" height="11" loading="lazy">
+          </span>
+        </button>
+        <button class="row style-37-row" type="button">
+          <span class="typo-316 style-4-text">Liked Songs</span>
+          <span class="icon-wrap" aria-hidden="true">
+            <img class="icon" alt="" src="./figmaimages/figma_image_0_179_f17b253f.svg" width="12" height="11" loading="lazy">
+          </span>
+        </button>
+      </div>
+
+      <div class="footer" aria-label="Legal links">
+        <div class="footer-links">
+          <a href="#" class="typo-318 style-18-text">Legal</a>
+          <a href="#" class="typo-318 style-18-text">Privacy Center</a>
+          <a href="#" class="typo-319 style-18-text">Privacy Policy</a>
+          <a href="#" class="typo-318 style-18-text">Cookies</a>
+          <a href="#" class="typo-318 style-18-text">About Ads</a>
+        </div>
+        <div class="footer-meta">
+          <span class="typo-320 style-36-text">Cookies</span>
+        </div>
+      </div>
+
+      <button class="lang style-167-chip" type="button" aria-label="Change language">
+        <img class="icon" alt="" src="./figmaimages/figma_image_0_198_e5e3c5fe.svg" width="16" height="16" loading="lazy">
+        <span class="typo-321 style-4-text">English</span>
+      </button>
+    </aside>
+
+    <!-- Header -->
+    <header id="header" class="style-2-bg" role="banner" aria-label="Top bar">
+      <a href="#" class="header-brand brand-logo-link" aria-label="Spotify home">
+        <img
+          class="brand-logo"
+          src="assets/figmaimages/figma_image_0_3.png"
+          alt="Spotify"
+          width="88"
+          height="28"
+          loading="lazy"
+          decoding="async"
+        >
+      </a>
+      <div class="nav-arrows" role="group" aria-label="History navigation">
+        <button class="circle-btn" type="button" aria-label="Go back">
+          <img class="icon" src="./figmaimages/figma_image_0_9_d39f66c1.svg" alt="" width="9" height="16" loading="lazy">
+        </button>
+        <button class="circle-btn" type="button" aria-label="Go forward" disabled></button>
+      </div>
+      <div class="actions">
+        <a class="typo-306 style-18-text" href="#" role="button">Sign up</a>
+        <a class="btn-login style-149-btn" href="#" role="button" aria-label="Log in">
+          <span class="typo-307">Log in</span>
+        </a>
+      </div>
+    </header>
+
+    <!-- Main content -->
+    <main id="main" role="main">
+      <div id="featured" class="style-47-bg" aria-hidden="true"></div>
+
+      <div id="sections">
+        <!-- Section: Focus -->
+        <section class="section" aria-labelledby="sec-focus">
+          <div class="section-head">
+            <h2 id="sec-focus" class="typo-310 style-4-text">Focus</h2>
+            <a href="#" class="typo-311 style-36-text">Show all</a>
+          </div>
+          <div class="cards" role="list">
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_48_141caf28.png" alt="Peaceful Piano cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">Peaceful Piano</h3>
+              <p class="desc typo-313 style-18-text">Relax and indulge with beautiful piano pieces</p>
+            </article>
+
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_57_167612ff.png" alt="Deep Focus cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">Deep Focus</h3>
+              <p class="desc typo-313 style-18-text">Keep calm and focus with ambient and post-rock music.</p>
+            </article>
+
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_66_3cdc49a7.png" alt="Instrumental Study cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">Instrumental Study</h3>
+              <p class="desc typo-313 style-18-text">Focus with soft study music in the background.</p>
+            </article>
+
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_75_343a17da.png" alt="Jazz Vibes cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">Jazz Vibes</h3>
+              <p class="desc typo-313 style-18-text">The original chill instrumental beats playlist.</p>
+            </article>
+          </div>
+        </section>
+
+        <!-- Section: Spotify Playlists -->
+        <section class="section" aria-labelledby="sec-spotify-playlists">
+          <div class="section-head">
+            <h2 id="sec-spotify-playlists" class="typo-314 style-4-text">Spotify Playlists</h2>
+            <a href="#" class="typo-311 style-36-text">Show all</a>
+          </div>
+          <div class="cards" role="list">
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_99_9026a9ed.png" alt="Today's Top Hits cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">Today's Top Hits</h3>
+              <p class="desc typo-313 style-18-text">Ed Sheeran is on top of the Hottest 50!</p>
+            </article>
+
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_108_b185b849.png" alt="RapCaviar cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">RapCaviar</h3>
+              <p class="desc typo-313 style-18-text">New music from Roddy Ricch, Kodak Black, NLE Choppa and BIA.</p>
+            </article>
+
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_117_036fe14c.png" alt="All Out 2010s cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-315 style-4-text">All Out 2010s</h3>
+              <p class="desc typo-313 style-18-text">The biggest songs of the 2010s.</p>
+            </article>
+
+            <article class="card style-153-card" role="listitem">
+              <div class="cover style-155-image">
+                <img src="./figmaimages/figma_image_0_135_623b0d88.png" alt="Chill Hits cover art" loading="lazy">
+              </div>
+              <h3 class="title typo-312 style-4-text">Chill Hits</h3>
+              <p class="desc typo-313 style-18-text">Kick back to the best new and recent chill hits.</p>
+            </article>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Promo bar -->
+    <div id="promo" class="style-150-promo" role="region" aria-label="Sign up promotion">
+      <div class="content">
+        <div>
+          <div class="typo-308 style-4-text">Preview of Spotify</div>
+          <div class="typo-309 style-4-text">Sign up to get unlimited songs and podcasts with occasional ads. No credit card needed.</div>
+        </div>
+        <a class="cta" href="#" role="button" aria-label="Sign up free"><span class="typo-307">Sign up free</span></a>
+      </div>
+    </div>
+
+  </div>
+  <script src="./app.js"></script>
+
+  <!-- Persistent bottom playback bar -->
+  <div class="playback-bar" role="region" aria-label="Playback controls">
+    <div class="pb-controls" role="group" aria-label="Primary playback controls">
+      <button class="pb-btn pb-prev" type="button" aria-label="Previous track" role="button">
+        <span class="pb-icon" aria-hidden="true">⏮</span>
+      </button>
+      <button class="pb-btn pb-play" type="button" aria-label="Play/Pause" aria-pressed="false" role="button">
+        <span class="pb-icon" aria-hidden="true">▶</span>
+      </button>
+      <button class="pb-btn pb-next" type="button" aria-label="Next track" role="button">
+        <span class="pb-icon" aria-hidden="true">⏭</span>
+      </button>
+    </div>
+
+    <div class="pb-meta" aria-live="polite">
+      <div class="pb-title" id="pb-title">Nothing playing</div>
+      <div class="pb-times">
+        <span class="pb-current" id="pb-current" aria-live="off">0:00</span>
+        <input
+          class="pb-scrubber"
+          id="pb-scrubber"
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value="0"
+          role="slider"
+          aria-label="Seek"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow="0"
+          aria-controls="pb-title"
+        />
+        <span class="pb-duration" id="pb-duration" aria-live="off">0:00</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+    `;
+  }
+
+  /**
+   * PUBLIC_INTERFACE
    * Extracts the body content from a full HTML document string, returning only the inner markup that should be injected.
    * Also strips any <script> tags to prevent inline execution; scripts are loaded via controlled appendScript.
    */
@@ -190,12 +394,12 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
 
   /**
    * PUBLIC_INTERFACE
-   * Rewrites relative URLs in the fetched HTML markup to absolute /assets/ paths so that images and CSS resolve.
+   * Rewrites relative URLs in the inlined HTML markup to absolute /assets/ paths so that images and CSS resolve.
    * - ./figmaimages/... or figmaimages/... => /assets/figmaimages/...
    * - ./common.css, ./spotify-1-0-3.css => /assets/common.css, /assets/spotify-1-0-3.css
    * - ./app.js, ./spotify-1-0-3.js => /assets/app.js, /assets/spotify-1-0-3.js
    * Also fixes any accidental src/href="assets/..." to include the leading slash.
-   * Removes any remaining <link rel="stylesheet"> and <script> tags to avoid duplicate injections.
+   * Removes any remaining <link rel="stylesheet"> tags to avoid duplicate injections.
    */
   private rewriteAssetUrls(html: string): string {
     let out = html;
@@ -212,63 +416,9 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
     // Any src/href="assets/..." -> "/assets/..."
     out = out.replace(/(src|href)=["']assets\//g, '$1="/assets/');
 
-    // Strip stylesheet links and scripts from injected HTML (we add them in a controlled way)
+    // Strip stylesheet links from injected HTML (we add them in a controlled way)
     out = out.replace(/<link[^>]+rel=["']?stylesheet["']?[^>]*>/gi, '');
-    out = out.replace(/<script[\s\S]*?<\/script>/gi, '');
 
     return out;
-    }
-
-  /**
-   * PUBLIC_INTERFACE
-   * Fetches the design HTML, validates response, rewrites URLs, and returns the final HTML string.
-   * Throws on errors so the caller can show a visible fallback UI instead of a blank screen.
-   */
-  private async fetchDesignHtmlWithValidation(url: string): Promise<string> {
-    const resp = await (globalThis as any).fetch(url, { credentials: 'same-origin' }).catch((err: any) => {
-      console.error('Fetch failed for design HTML:', err);
-      throw err;
-    });
-    if (!resp || !resp.ok) {
-      const status = resp ? `${resp.status} ${resp.statusText || ''}`.trim() : 'no-response';
-      throw new Error(`Failed to load design HTML: ${status}`);
-    }
-    let html = await resp.text();
-    if (!html || !html.trim()) {
-      throw new Error('Design HTML is empty');
-    }
-
-    // Extract body content and rewrite asset URLs
-    html = this.extractBodyInnerHtml(html);
-    html = this.rewriteAssetUrls(html);
-
-    // Final sanity check: ensure we have a minimal root (#screen) or any content
-    if (!/#screen\b/.test(html) && html.trim().length < 32) {
-      console.warn('Design HTML did not contain expected #screen root; injecting nonetheless.');
-    }
-    return html;
-  }
-
-  /**
-   * PUBLIC_INTERFACE
-   * Provides a minimal inline fallback UI to ensure the app doesn't render a blank page.
-   */
-  private setInlineFallbackHtml(): void {
-    const fallback = `
-      <div id="screen" style="position:relative;min-height:60vh;padding:24px;background:#f9fafb;color:#111827;">
-        <h1 style="font:600 20px/1.3 Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin-bottom:8px;">
-          Spotify UI preview unavailable
-        </h1>
-        <p style="font:400 14px/1.6 Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;">
-          We couldn't load the preview HTML. Please verify that:
-        </p>
-        <ul style="margin-top:8px;padding-left:18px;font:400 14px/1.6 Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
-          <li><code>/assets/spotify-1-0-3.html</code> is accessible</li>
-          <li>Images exist under <code>/assets/figmaimages/</code></li>
-          <li>Stylesheets <code>assets/common.css</code> and <code>assets/spotify-1-0-3.css</code> are present</li>
-        </ul>
-      </div>
-    `;
-    this.htmlContent = this.sanitizer.bypassSecurityTrustHtml(fallback);
   }
 }
