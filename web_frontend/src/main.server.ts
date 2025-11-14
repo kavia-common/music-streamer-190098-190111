@@ -7,6 +7,8 @@ import { config } from './app/app.config.server';
  * Server bootstrap entrypoint for Angular SSR.
  * Must export default a function returning Promise<ApplicationRef>, which bootstrapApplication does.
  */
-const bootstrap = () => bootstrapApplication(AppComponent, config);
+import type { ApplicationRef } from '@angular/core';
+
+const bootstrap = (): Promise<ApplicationRef> => bootstrapApplication(AppComponent, config);
 
 export default bootstrap;

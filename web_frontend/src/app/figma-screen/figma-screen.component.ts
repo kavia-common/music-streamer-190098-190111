@@ -91,7 +91,11 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
 
     // Fetch and inject the Figma HTML.
     try {
-      const html = await this.fetchDesignHtmlWithValidation('assets/spotify-1-0-3.html');
+      // Prefer absolute /assets to avoid issues with base href or nested routes,
+      // fall back to relative if needed (in case of hosting specifics).
+      const html = await this.fetchDesignHtmlWithValidation('/assets/spotify-1-0-3.html').catch(() =>
+        this.fetchDesignHtmlWithValidation('assets/spotify-1-0-3.html')
+      );
 
       // Sanitize and set [innerHTML]
       this.htmlContent = this.sanitizer.bypassSecurityTrustHtml(html);
