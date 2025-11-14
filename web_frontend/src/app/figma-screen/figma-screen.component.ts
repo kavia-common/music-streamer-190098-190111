@@ -7,11 +7,14 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
  * PUBLIC_INTERFACE
  * FigmaScreenComponent
  * Renders the extracted Figma screen inside the Angular app by injecting markup from assets/spotify-1-0-3.html.
- * Ensures:
- *  - Full HTML is injected via [innerHTML] (not escaped)
- *  - Angular DomSanitizer bypass is used intentionally for this trusted asset
- *  - CSS/JS assets are loaded
- *  - Relative URLs inside the fetched HTML are rewritten to absolute /assets/... so images/styles resolve
+ * Hardened to avoid blank screens:
+ *  - Validates fetch success and non-empty response
+ *  - Provides inline fallback content if fetch fails
+ *  - Uses DomSanitizer.bypassSecurityTrustHtml correctly and binds via [innerHTML]
+ *  - Rewrites asset paths to valid /assets/... URLs (figmaimages, css, js)
+ *  - Strips <script> tags from injected HTML to avoid unsafe inline execution
+ *  - Guards against duplicate CSS/JS injection if index.html already includes them
+ *  - Shows a visible error message instead of a blank screen on failures
  */
 @Component({
   selector: 'app-figma-screen',
@@ -21,6 +24,12 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
     <div class="figma-screen-wrapper" aria-live="polite">
       <!-- The Figma HTML is injected into this container -->
       <div [innerHTML]="htmlContent" class="figma-html-container"></div>
+
+      <!-- Accessible error fallback if content couldn't load -->
+      <div *ngIf="showError" class="error-fallback" role="alert">
+        <div class="error-title">We couldn't load the preview.</div>
+        <div class="error-desc">Please check that the design HTML is available and try again.</div>
+      </div>
     </div>
   `,
   styles: [`
@@ -30,8 +39,19 @@ import { DomSanitizer, SafeHtml } from '@angular/platform-browser';
       min-height: 100vh;
       width: 100%;
     }
-    /* Ensure the Angular host allows the screen to occupy full height */
     :host { background: transparent; }
+
+    .error-fallback {
+      margin: 16px;
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid #fecaca;
+      background: #fef2f2;
+      color: #991b1b;
+      font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .error-title { font-weight: 600; margin-bottom: 4px; }
+    .error-desc { font-size: 14px; opacity: 0.9; }
   `]
 })
 export class FigmaScreenComponent implements OnInit, OnDestroy {
@@ -43,6 +63,10 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
   // Holds the sanitized HTML to be rendered into the template.
   htmlContent: SafeHtml | string = '';
 
+  // PUBLIC_INTERFACE
+  // Indicates if a visible error fallback should be shown for accessibility.
+  showError = false;
+
   // Keep track of dynamically injected nodes to clean them up on destroy.
   private addedNodes: any[] = [];
 
@@ -51,56 +75,38 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
     if (!isPlatformBrowser(this.platformId)) {
       return;
     }
-    // Use globalThis to avoid linter no-undef in non-browser contexts
     const g: any = (typeof globalThis !== 'undefined') ? globalThis : undefined;
     if (!g || typeof g.fetch !== 'function') {
-      // Skip runtime HTML fetch if fetch is not available (e.g., SSR)
+      // No fetch in this environment (e.g., SSR). Show safe fallback instead of blank.
+      this.showError = true;
+      this.setInlineFallbackHtml();
       return;
     }
 
-    // Inject global stylesheets so Figma classes apply.
-    const css1 = this.appendStylesheet('assets/common.css');
-    const css2 = this.appendStylesheet('assets/spotify-1-0-3.css');
+    // Inject global stylesheets so Figma classes apply, avoiding duplicates.
+    const css1 = this.appendStylesheet('/assets/common.css') || this.appendStylesheet('assets/common.css');
+    const css2 = this.appendStylesheet('/assets/spotify-1-0-3.css') || this.appendStylesheet('assets/spotify-1-0-3.css');
     if (css1) this.addedNodes.push(css1);
     if (css2) this.addedNodes.push(css2);
 
     // Fetch and inject the Figma HTML.
-    // We rewrite relative asset refs to absolute /assets/ paths so they resolve inside Angular.
     try {
-      const resp = await (globalThis as any).fetch('assets/spotify-1-0-3.html', { credentials: 'same-origin' });
-      if (!resp.ok) throw new Error(`Failed to load design HTML: ${resp.status}`);
-      let html = await resp.text();
-
-      // Remove the outer <html>, <head>, and <body> wrappers if present and keep inner content.
-      html = this.extractBodyInnerHtml(html);
-
-      // Rewrite relative asset paths to absolute /assets/ paths.
-      html = this.rewriteAssetUrls(html);
-
-      // Important: Ensure CSS links inside fetched HTML are effectively loaded.
-      // We already injected these globally, but if any remain in markup, strip them to avoid duplicates.
-      html = html.replace(/<link[^>]+rel=["']?stylesheet["']?[^>]*>/gi, '');
-
-      // Optionally add a base shim for assets (not required since we rewrote URLs)
-      // Keep as documentation reference:
-      // this.addBaseShim('/assets/');
-
-      // Inject JS in browser context (ensure they are present)
-      const js1 = this.appendScript('assets/app.js', false);
-      const js2 = this.appendScript('assets/spotify-1-0-3.js', false);
-      if (js1) this.addedNodes.push(js1);
-      if (js2) this.addedNodes.push(js2);
+      const html = await this.fetchDesignHtmlWithValidation('assets/spotify-1-0-3.html');
 
       // Sanitize and set [innerHTML]
       this.htmlContent = this.sanitizer.bypassSecurityTrustHtml(html);
+      this.showError = false;
+
+      // Only append scripts after content is present and avoid duplicates
+      const js1 = this.appendScript('/assets/app.js', false) || this.appendScript('assets/app.js', false);
+      const js2 = this.appendScript('/assets/spotify-1-0-3.js', false) || this.appendScript('assets/spotify-1-0-3.js', false);
+      if (js1) this.addedNodes.push(js1);
+      if (js2) this.addedNodes.push(js2);
     } catch (e) {
-      // Fallback: render a minimal error to help diagnose
       console.error('Error injecting Figma HTML', e);
-      this.htmlContent = `
-        <div style="padding:16px;color:#b91c1c;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;">
-          Failed to load Figma HTML. Check that /assets/spotify-1-0-3.html is accessible.
-        </div>
-      `;
+      this.showError = true;
+      // Fallback to inline snippet so users never see a blank screen.
+      this.setInlineFallbackHtml();
     }
   }
 
@@ -131,7 +137,8 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
       link.media = 'all';
       head.appendChild(link);
       return link;
-    } catch {
+    } catch (err) {
+      console.error('appendStylesheet error', err);
       return null;
     }
   }
@@ -149,7 +156,8 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
       (script as any).defer = defer;
       body.appendChild(script);
       return script;
-    } catch {
+    } catch (err) {
+      console.error('appendScript error', err);
       return null;
     }
   }
@@ -157,34 +165,39 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
   /**
    * PUBLIC_INTERFACE
    * Extracts the body content from a full HTML document string, returning only the inner markup that should be injected.
+   * Also strips any <script> tags to prevent inline execution; scripts are loaded via controlled appendScript.
    */
   private extractBodyInnerHtml(html: string): string {
+    let content = html;
     try {
-      // Fast path: if there's a body tag, extract contents
       const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
       if (bodyMatch && bodyMatch[1]) {
-        return bodyMatch[1];
+        content = bodyMatch[1];
       }
-      // If no <body>, return as-is
-      return html;
-    } catch {
-      return html;
-    }
+    } catch { /* keep original */ }
+
+    // Strip script tags entirely for safety; we manage scripts via appendScript
+    try {
+      content = content.replace(/<script[\s\S]*?<\/script>/gi, '');
+    } catch { /* ignore */ }
+
+    return content;
   }
 
   /**
    * PUBLIC_INTERFACE
    * Rewrites relative URLs in the fetched HTML markup to absolute /assets/ paths so that images and CSS resolve.
-   * - ./figmaimages/... => /assets/figmaimages/...
+   * - ./figmaimages/... or figmaimages/... => /assets/figmaimages/...
    * - ./common.css, ./spotify-1-0-3.css => /assets/common.css, /assets/spotify-1-0-3.css
    * - ./app.js, ./spotify-1-0-3.js => /assets/app.js, /assets/spotify-1-0-3.js
-   * Also fixes any accidental "assets/..." without leading slash to "/assets/...".
+   * Also fixes any accidental src/href="assets/..." to include the leading slash.
+   * Removes any remaining <link rel="stylesheet"> and <script> tags to avoid duplicate injections.
    */
   private rewriteAssetUrls(html: string): string {
     let out = html;
 
-    // Images/icons and other file references starting with ./figmaimages
-    out = out.replace(/(["'\(])\.\/figmaimages\//g, '$1/assets/figmaimages/');
+    // Normalize any 'figmaimages/...' or './figmaimages/...' to '/assets/figmaimages/...'
+    out = out.replace(/(["'\(])(?:\.\/)?figmaimages\//g, '$1/assets/figmaimages/');
 
     // Stylesheets/scripts referenced relatively
     out = out.replace(/(["'\(])\.\/common\.css/g, '$1/assets/common.css');
@@ -195,27 +208,63 @@ export class FigmaScreenComponent implements OnInit, OnDestroy {
     // Any src/href="assets/..." -> "/assets/..."
     out = out.replace(/(src|href)=["']assets\//g, '$1="/assets/');
 
+    // Strip stylesheet links and scripts from injected HTML (we add them in a controlled way)
+    out = out.replace(/<link[^>]+rel=["']?stylesheet["']?[^>]*>/gi, '');
+    out = out.replace(/<script[\s\S]*?<\/script>/gi, '');
+
     return out;
+    }
+
+  /**
+   * PUBLIC_INTERFACE
+   * Fetches the design HTML, validates response, rewrites URLs, and returns the final HTML string.
+   * Throws on errors so the caller can show a visible fallback UI instead of a blank screen.
+   */
+  private async fetchDesignHtmlWithValidation(url: string): Promise<string> {
+    const resp = await (globalThis as any).fetch(url, { credentials: 'same-origin' }).catch((err: any) => {
+      console.error('Fetch failed for design HTML:', err);
+      throw err;
+    });
+    if (!resp || !resp.ok) {
+      const status = resp ? `${resp.status} ${resp.statusText || ''}`.trim() : 'no-response';
+      throw new Error(`Failed to load design HTML: ${status}`);
+    }
+    let html = await resp.text();
+    if (!html || !html.trim()) {
+      throw new Error('Design HTML is empty');
+    }
+
+    // Extract body content and rewrite asset URLs
+    html = this.extractBodyInnerHtml(html);
+    html = this.rewriteAssetUrls(html);
+
+    // Final sanity check: ensure we have a minimal root (#screen) or any content
+    if (!/#screen\b/.test(html) && html.trim().length < 32) {
+      console.warn('Design HTML did not contain expected #screen root; injecting nonetheless.');
+    }
+    return html;
   }
 
   /**
    * PUBLIC_INTERFACE
-   * Adds a <base> element pointing to /assets/ to help resolve relative paths in injected HTML.
-   * Not strictly required when rewriteAssetUrls runs, so it's unused by default.
+   * Provides a minimal inline fallback UI to ensure the app doesn't render a blank page.
    */
-  private addBaseShim(href: string): void {
-    try {
-      const head = this.doc.head || this.doc.getElementsByTagName('head')?.[0];
-      if (!head) return;
-      const existing = head.querySelector('base[data-role="assets-base-shim"]') as any;
-      if (existing) return;
-      const base = this.doc.createElement('base');
-      base.setAttribute('data-role', 'assets-base-shim');
-      base.href = href;
-      head.appendChild(base);
-      this.addedNodes.push(base);
-    } catch {
-      // noop
-    }
+  private setInlineFallbackHtml(): void {
+    const fallback = `
+      <div id="screen" style="position:relative;min-height:60vh;padding:24px;background:#f9fafb;color:#111827;">
+        <h1 style="font:600 20px/1.3 Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin-bottom:8px;">
+          Spotify UI preview unavailable
+        </h1>
+        <p style="font:400 14px/1.6 Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;">
+          We couldn't load the preview HTML. Please verify that:
+        </p>
+        <ul style="margin-top:8px;padding-left:18px;font:400 14px/1.6 Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;">
+          <li><code>/assets/spotify-1-0-3.html</code> is accessible</li>
+          <li>Images exist under <code>/assets/figmaimages/</code></li>
+          <li>Stylesheets <code>assets/common.css</code> and <code>assets/spotify-1-0-3.css</code> are present</li>
+        </ul>
+      </div>
+    `;
+    this.htmlContent = this.sanitizer.bypassSecurityTrustHtml(fallback);
   }
 }
